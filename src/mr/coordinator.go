@@ -9,6 +9,7 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
+	
 
 }
 

@@ -1,11 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-import "os"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+)
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -23,7 +25,6 @@ func ihash(key string) int {
 
 var coordSockName string // socket for coordinator
 
-
 // main/mrworker.go calls this function.
 func Worker(sockname string, mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -31,9 +32,54 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 	coordSockName = sockname
 
 	// Your worker implementation here.
+	var taskID, nReduce int
+	var taskType TaskType
+	var fileName string
+	task, err := RequestTask()
+	if err == nil {
+		taskID = task.TaskId
+		taskType = task.TaskType
+		fileName = task.FileName
+		nReduce = task.NReduce
+	} else {
+		log.Fatal("error happened when request tasks") // exit
+	}
+
+	if taskType == MapTask {
+		mapTask(taskID, fileName, nReduce, mapf)
+
+	}
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+}
+
+// performs the mapping and returns the list of file names of the intermediates
+func mapTask(mapID int, fileName string, nReduce int, mapf func(string, string) []KeyValue) ([]string, error) {
+	file, err := os.Open(fileName)
+	if err != nil {
+		log.Fatalf("cannot open %v", fileName)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", fileName)
+	}
+	file.Close()
+	kva := mapf(fileName, string(content))
+	
+}
+
+func RequestTask() (RequestTaskReply, error) {
+	args := RequestTaskArgs{}
+	reply := RequestTaskReply{}
+
+	ok := call("Coordinator.AllocateWork", &args, &reply)
+	if ok {
+		return reply, nil
+	} else {
+		fmt.Printf("call failed!\n")
+		return RequestTaskReply{}, fmt.Errorf("rpc failed")
+	}
 
 }
 
