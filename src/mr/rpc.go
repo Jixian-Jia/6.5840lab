@@ -39,7 +39,17 @@ const (
 type RequestTaskReply struct{
 	
 	TaskType TaskType 
-	FileName string
+	FileNames []string
 	NReduce int 	
 	TaskId int // could be MapId or ReduceId, depending on tasktype.
+}
+
+type UpdateArgs struct{
+	TaskId int
+	TaskType TaskType 
+	FileNames []string
+}
+
+type UpdateReply struct{
+	//do nothing
 }
