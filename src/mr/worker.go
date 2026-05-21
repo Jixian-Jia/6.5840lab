@@ -46,110 +46,125 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 	var taskID, nReduce int
 	var taskType TaskType
 	var fileNames []string
-	// todo: make it an infinite loop
 
-	task, err := RequestTask()
-	if err == nil {
-		taskID = task.TaskId
-		taskType = task.TaskType
-		fileNames = task.FileNames
-		nReduce = task.NReduce
-	} else {
-		log.Fatal("error happened when request tasks") // exit
-	}
-
-	if taskType == MapTask {
-		kva := mapTask(fileNames[0], mapf) //assume just one file for a worker
-
-		// make buckets
-		tmpfiles := []*os.File{}
-		imfilenames := []string{}
-		encoders := []*json.Encoder{}
-		for i := 0; i < nReduce; i++ {
-			imfilename := fmt.Sprintf("mr-%d-%d.json", taskID, i)
-			// use temp files to write atomically
-			tmp, err := os.CreateTemp("", imfilename+"-temp")
-			if err != nil {
-				panic(err)
-			}
-			imfilenames = append(imfilenames, imfilename)
-			tmpfiles = append(tmpfiles, tmp)
-			enc := json.NewEncoder(tmp)
-			encoders = append(encoders, enc)
-		}
-		// partition the kv pairs
-
-		for _, kv := range kva {
-			bucket := ihash(kv.Key) % nReduce
-			err := encoders[bucket].Encode(&kv)
-			if err != nil {
-				log.Fatal("error happened when saving intermediates") // exit
-			}
+	for {
+		task, err := RequestTask()
+		if err == nil {
+			taskID = task.TaskId
+			taskType = task.TaskType
+			fileNames = task.FileNames
+			nReduce = task.NReduce
+		} else {
+			log.Fatal("error happened when request tasks") // exit
 		}
 
-		for i, tmp := range tmpfiles {
-			tmp.Close()
-			os.Rename(tmp.Name(),imfilenames[i])
-		}
+		if taskType == MapTask {
+			kva := mapTask(fileNames[0], mapf) //assume just one file for a worker
 
-		// notify the coordinator about the file locations
-		err := updateState(taskID, taskType, imfilenames)
-		if err != nil {
-			log.Fatal("error happened when updating state")
-		}
-	}
-
-	if taskType == WaitTask {
-		fmt.Printf("task id:%d waiting", taskID)
-		time.Sleep(5) // sleep for 5 second
-	}
-
-	if taskType == ReduceTask {
-		// fileNames now is a list of files to be reduced
-		// open and read all the files into memory
-
-		intermediate := []KeyValue{}
-		for _, file := range fileNames {
-			f, err := os.OpenFile(
-				file,
-				os.O_WRONLY,
-				0644)
-			if err != nil {
-				panic(err)
-			}
-			defer f.Close()
-			dec := json.NewDecoder(f)
-			for {
-				var kv KeyValue
-				if err := dec.Decode(&kv); err != nil {
-					break
+			// make buckets
+			tmpfiles := []*os.File{}
+			imfilenames := []string{}
+			encoders := []*json.Encoder{}
+			for i := 0; i < nReduce; i++ {
+				imfilename := fmt.Sprintf("mr-%d-%d.json", taskID, i)
+				// use temp files to write atomically
+				tmp, err := os.CreateTemp("", imfilename+"-temp")
+				if err != nil {
+					panic(err)
 				}
-				intermediate = append(intermediate, kv)
+				imfilenames = append(imfilenames, imfilename)
+				tmpfiles = append(tmpfiles, tmp)
+				enc := json.NewEncoder(tmp)
+				encoders = append(encoders, enc)
+			}
+			// partition the kv pairs
+
+			for _, kv := range kva {
+				bucket := ihash(kv.Key) % nReduce
+				err := encoders[bucket].Encode(&kv)
+				if err != nil {
+					log.Fatal("error happened when saving intermediates") // exit
+				}
+			}
+
+			for i, tmp := range tmpfiles {
+				tmp.Close()
+				os.Rename(tmp.Name(), imfilenames[i])
+			}
+
+			// notify the coordinator about the file locations
+			err := updateState(taskID, taskType, imfilenames)
+			if err != nil {
+				log.Fatal("error happened when updating state")
 			}
 		}
-		// sort all pairs
-		sort.Sort(ByKey(intermediate))
-		//
-		// call Reduce on each distinct key in intermediate[],
-		// and print the result to mr-out-0.
-		//
-		i := 0
-		for i < len(intermediate) {
-			j := i + 1
-			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-				j++
+
+		if taskType == WaitTask {
+			fmt.Printf("task id:%d waiting", taskID)
+			time.Sleep(time.Second) // sleep for 1 second
+		}
+
+		if taskType == ReduceTask {
+			// fileNames now is a list of files to be reduced
+			// open and read all the files into memory
+
+			intermediate := []KeyValue{}
+			for _, file := range fileNames {
+				f, err := os.Open(file)
+				if err != nil {
+					panic(err)
+				}
+
+				dec := json.NewDecoder(f)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					intermediate = append(intermediate, kv)
+				}
+				f.Close()
 			}
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, intermediate[k].Value)
+			// sort all pairs
+			sort.Sort(ByKey(intermediate))
+			//
+			// call Reduce on each distinct key in intermediate[],
+			// and print the result to mr-out-0.
+			//
+			tmp, err := os.CreateTemp("", "mr-out-tmp*")
+			if err != nil {
+				log.Fatal("cannot create temp files")
 			}
-			output := reducef(intermediate[i].Key, values)
 
-			// this is the correct format for each line of Reduce output.
-			fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
 
-			i = j
+				// this is the correct format for each line of Reduce output.
+				fmt.Fprintf(tmp, "%v %v\n", intermediate[i].Key, output)
+				i = j
+			}
+			tmp.Close()
+			outputname := fmt.Sprintf("mr-out-%d", taskID)
+			os.Rename(tmp.Name(), outputname)
 
+			// notify the coordinator the finish of reduce
+			err = updateState(taskID, taskType, []string{outputname})
+			if err != nil {
+				log.Fatal("error happened when updating state(reducer)")
+			}
+		}
+
+		if taskType == ExitTask {
+			return
 		}
 	}
 	// uncomment to send the Example RPC to the coordinator.
