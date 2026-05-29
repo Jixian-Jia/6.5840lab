@@ -1,7 +1,5 @@
 package mr
 
-import "path/filepath"
-
 //
 // RPC definitions.
 //
@@ -23,33 +21,31 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
-type RequestTaskArgs struct{
-
+type RequestTaskArgs struct {
 }
 
 type TaskType int
 
 const (
-    MapTask TaskType = iota
-    ReduceTask
-    WaitTask
-    ExitTask
+	MapTask TaskType = iota
+	ReduceTask
+	WaitTask
+	ExitTask
 )
 
-type RequestTaskReply struct{
-	
-	TaskType TaskType 
+type RequestTaskReply struct {
+	TaskType  TaskType
 	FileNames []string
-	NReduce int 	
-	TaskId int // could be MapId or ReduceId, depending on tasktype.
+	NReduce   int
+	TaskId    int // could be MapId or ReduceId, depending on tasktype.
 }
 
-type UpdateArgs struct{
-	TaskId int
-	TaskType TaskType 
+type UpdateArgs struct {
+	TaskId    int
+	TaskType  TaskType
 	FileNames []string
 }
 
-type UpdateReply struct{
+type UpdateReply struct {
 	//do nothing
 }

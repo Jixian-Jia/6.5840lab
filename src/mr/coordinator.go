@@ -60,9 +60,10 @@ func (c *Coordinator) AllocateWork(args *RequestTaskArgs, reply *RequestTaskRepl
 		// find the first task to be scheduled
 		var nextTask *TaskInfo
 		var taskID int
-		for i, task := range c.mapTasks {
+		for i := range c.mapTasks {
+			task := &c.mapTasks[i]
 			if task.state == Scheduled {
-				nextTask = &task
+				nextTask = task
 				taskID = i
 				break
 			}
@@ -84,9 +85,10 @@ func (c *Coordinator) AllocateWork(args *RequestTaskArgs, reply *RequestTaskRepl
 		// assume []reduceTask has been initialized somewhere else
 		var nextTask *TaskInfo
 		var taskID int
-		for i, task := range c.reduceTasks {
+		for i := range c.reduceTasks {
+			task := &c.reduceTasks[i]
 			if task.state == Scheduled {
-				nextTask = &task
+				nextTask = task
 				taskID = i
 				break
 			}
@@ -95,7 +97,7 @@ func (c *Coordinator) AllocateWork(args *RequestTaskArgs, reply *RequestTaskRepl
 		if nextTask == nil {
 			reply.TaskType = WaitTask
 		} else {
-			reply.TaskType = MapTask
+			reply.TaskType = ReduceTask
 			reply.FileNames = nextTask.files
 			reply.NReduce = c.nReduce
 			reply.TaskId = taskID
@@ -112,15 +114,26 @@ func (c *Coordinator) UpdateWork(args *UpdateArgs, reply *UpdateReply) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if args.TaskType != TaskType(c.phase) {
-		return fmt.Errorf("received maptask update in reduce phase")
+
+	if c.phase == MapPhase && args.TaskType != MapTask {
+		return fmt.Errorf("received reduce update during map phase")
+	}
+
+	if c.phase == ReducePhase && args.TaskType != ReduceTask {
+		return fmt.Errorf("received map update during reduce phase")
 	}
 	id := args.TaskId
 	if args.TaskType == MapTask {
+		if c.mapTasks[id].state != InProcess {
+			return nil
+		}
 		c.mapTasks[id].state = Done
 		c.imFiles[id] = args.FileNames
 		return nil
 	} else if args.TaskType == ReduceTask {
+		if c.reduceTasks[id].state != InProcess {
+			return nil
+		}
 		c.reduceTasks[id].state = Done
 		c.finalFiles[id] = args.FileNames[0]
 		return nil
@@ -156,6 +169,8 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.phase == Finish {
 		ret = true
 	}
@@ -177,10 +192,13 @@ func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator 
 		c.mapTasks = append(c.mapTasks, TaskInfo{files: []string{f}, state: Scheduled, startTime: time.Time{}})
 	}
 
-	for range nReduce {
+	for i := 0; i < nReduce; i++ {
 		// update this later
 		c.reduceTasks = append(c.reduceTasks, TaskInfo{files: []string{}, state: Scheduled, startTime: time.Time{}})
 	}
+
+	c.imFiles = make([][]string, len(files))
+	c.finalFiles = make([]string, nReduce)
 	// todo: the coor should periodically check on dead workers
 	// the dead workers should also restart themselves
 
@@ -211,14 +229,16 @@ func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator 
 
 func (c *Coordinator) checkTimeouts() {
 	if c.phase == MapPhase {
-		for _, task := range c.mapTasks {
+		for i := range c.mapTasks {
+			task := &c.mapTasks[i]
 			if task.state == InProcess && time.Since(task.startTime) > 10*time.Second {
 				task.state = Scheduled
 			}
 		}
 	}
 	if c.phase == ReducePhase {
-		for _, task := range c.reduceTasks {
+		for i := range c.reduceTasks {
+			task := &c.reduceTasks[i]
 			if task.state == InProcess && time.Since(task.startTime) > 10*time.Second {
 				task.state = Scheduled
 			}
@@ -230,8 +250,9 @@ func (c *Coordinator) checkTimeouts() {
 // if so, transition to the reduce phase and initialize  []reduceTaks
 // also check if the reduce phase has completed, if so change the phase to finish
 func (c *Coordinator) checkCompletion() {
+
 	if c.phase == MapPhase {
-		var cmplt bool = true
+		cmplt := true
 		for _, task := range c.mapTasks {
 			cmplt = cmplt && (task.state == Done)
 		}
@@ -248,9 +269,18 @@ func (c *Coordinator) checkCompletion() {
 					c.reduceTasks[bucketID].files = append(c.reduceTasks[bucketID].files, f)
 				}
 			}
+			c.phase = ReducePhase
 		}
+		return
 	}
 	if c.phase == ReducePhase {
-		//todo
+		cmplt := true
+		for _, task := range c.reduceTasks {
+			cmplt = cmplt && (task.state == Done)
+		}
+		if cmplt == true {
+			c.phase = Finish
+		}
+		return
 	}
 }
